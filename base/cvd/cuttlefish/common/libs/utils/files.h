@@ -38,9 +38,16 @@ Result<std::string> CreateHardLink(const std::string& target,
                                    bool overwrite_existing = false);
 Result<void> CreateSymLink(const std::string& target, const std::string& link,
                            bool overwrite_existing = false);
+Result<std::vector<std::string>> HardLinkDirecoryContentsRecursively(
+    const std::string& source, const std::string& destination);
+Result<std::vector<std::string>> MoveDirectoryContents(
+    const std::string& source, const std::string& destination);
 bool FileHasContent(const std::string& path);
 Result<std::vector<std::string>> DirectoryContents(const std::string& path);
 bool DirectoryExists(const std::string& path, bool follow_symlinks = true);
+inline bool IsDirectory(const std::string& path) {
+  return DirectoryExists(path);
+};
 Result<void> EnsureDirectoryExists(const std::string& directory_path,
                                    mode_t mode = S_IRWXU | S_IRWXG | S_IROTH |
                                                  S_IXOTH,
