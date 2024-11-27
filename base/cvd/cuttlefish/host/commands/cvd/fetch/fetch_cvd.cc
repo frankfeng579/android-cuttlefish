@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <android-base/logging.h>
@@ -44,6 +45,7 @@
 #include "host/libs/web/android_build_api.h"
 #include "host/libs/web/android_build_string.h"
 #include "host/libs/web/caching_build_api.h"
+#include "host/libs/web/cas/cas_downloader.h"
 #include "host/libs/web/chrome_os_build_string.h"
 #include "host/libs/web/credential_source.h"
 #include "host/libs/web/http_client/curl_global_init.h"
@@ -365,11 +367,19 @@ Result<std::unique_ptr<BuildApi>> GetBuildApi(const BuildApiFlags& flags) {
                                                    oauth_filepath));
 
   const auto cache_base_path = PerUserDir() + "/cache";
+
+  std::unique_ptr<CasDownloader> cas_downloader = nullptr;
+  Result<std::unique_ptr<CasDownloader>> result =
+      CasDownloader::Create(flags.cas_downloader_flags,
+                            flags.credential_flags.service_account_filepath);
+  if (result.ok()) {
+    cas_downloader = std::move(result.value());
+  }
   return CreateBuildApi(std::move(retrying_http_client), std::move(curl),
                         std::move(credential_source), std::move(flags.api_key),
                         flags.wait_retry_period, std::move(flags.api_base_url),
                         std::move(flags.project_id), flags.enable_caching,
-                        std::move(cache_base_path));
+                        std::move(cache_base_path), std::move(cas_downloader));
 }
 
 Result<LuciBuildApi> GetLuciBuildApi(const BuildApiFlags& flags) {
@@ -475,6 +485,31 @@ Result<void> SaveConfig(FetcherConfig& config,
   return {};
 }
 
+namespace {
+
+Result<std::vector<std::string>> ExtractImageContents(
+    const std::string& image_filepath, const std::string& target_dir,
+    const bool keep_archive) {
+  std::vector<std::string> files;
+  if (IsDirectory(image_filepath)) {
+    // The image is already uncompressed. Link or move its contents.
+    if (keep_archive) {
+      // Must use hard linking due to the way fetch_cvd uses the cache.
+      files = CF_EXPECT(
+          HardLinkDirecoryContentsRecursively(image_filepath, target_dir));
+    } else {
+      files = CF_EXPECT(MoveDirectoryContents(image_filepath, target_dir));
+      RecursivelyRemoveDirectory(image_filepath);
+    }
+  } else {
+    files = CF_EXPECT(
+        ExtractArchiveContents(image_filepath, target_dir, keep_archive));
+  }
+  return files;
+}
+
+}  // namespace
+
 Result<void> FetchDefaultTarget(BuildApi& build_api, const Builds& builds,
                                 const TargetDirectories& target_directories,
                                 const DownloadFlags& flags,
@@ -503,9 +538,9 @@ Result<void> FetchDefaultTarget(BuildApi& build_api, const Builds& builds,
         *builds.default_build, target_directories.root, img_zip_name));
     trace.CompletePhase("Download image zip",
                         FileSize(default_img_zip_filepath));
-    std::vector<std::string> image_files = CF_EXPECT(ExtractArchiveContents(
-        default_img_zip_filepath, target_directories.root,
-        keep_downloaded_archives));
+    std::vector<std::string> image_files = CF_EXPECT(
+        ExtractImageContents(default_img_zip_filepath, target_directories.root,
+                             keep_downloaded_archives));
     trace.CompletePhase("Extract image zip contents");
     LOG(DEBUG) << "Adding img-zip files for default build";
     for (auto& file : image_files) {
